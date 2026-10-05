@@ -52,18 +52,26 @@ function Nav() {
 function App() {
   return (
     <BrowserRouter>
-      <div className="container">
-        <Nav />
-        <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/login" element={<Auth mode="login" />} />
-          <Route path="/signup" element={<Auth mode="signup" />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/c/:code" element={<Certificate />} />
-          <Route path="/ledger" element={<Ledger />} />
-          <Route path="/how-it-works" element={<HowItWorks />} />
-        </Routes>
-      </div>
+      <Routes>
+        {/* The landing page is a full-bleed design with its own header and footer. */}
+        <Route path="/" element={<Landing />} />
+        <Route
+          path="*"
+          element={
+            <div className="container">
+              <Nav />
+              <Routes>
+                <Route path="/login" element={<Auth mode="login" />} />
+                <Route path="/signup" element={<Auth mode="signup" />} />
+                <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/c/:code" element={<Certificate />} />
+                <Route path="/ledger" element={<Ledger />} />
+                <Route path="/how-it-works" element={<HowItWorks />} />
+              </Routes>
+            </div>
+          }
+        />
+      </Routes>
     </BrowserRouter>
   )
 }
