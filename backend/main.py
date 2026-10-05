@@ -6,7 +6,7 @@ import string, random
 from auth import get_password_hash, verify_password, create_access_token, get_current_user_id
 from database import get_db
 from crypto_utils import generate_keypair, pubkey_to_hex, sign
-from core import verify_full_chain
+from core import verify_chain_detailed, create_checkpoint, list_checkpoints, get_inclusion_proof
 from record import CustodyRecord, GENESIS_HASH
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -46,16 +46,28 @@ class TransferRequest(BaseModel):
 
 # ---------- Helpers ----------
 
-def generate_certificate_code():
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+def generate_certificate_code(conn):
+    """Short, human-readable code for the QR URL. Retried until unused."""
+    while True:
+        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        if not conn.execute("SELECT 1 FROM pieces WHERE certificate_code = ?", (code,)).fetchone():
+            return code
 
 # ---------- Auth ----------
 
 @app.post("/auth/signup")
 def signup(req: SignupRequest):
+    email = req.email.strip().lower()
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    if len(req.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if req.role not in ("maker", "seller"):
+        raise HTTPException(status_code=400, detail="Role must be 'maker' or 'seller'")
+
     conn = get_db()
     try:
-        existing = conn.execute("SELECT id FROM users WHERE email = ?", (req.email,)).fetchone()
+        existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
         if existing:
             raise HTTPException(status_code=400, detail="Email already registered")
 
@@ -72,7 +84,7 @@ def signup(req: SignupRequest):
         c = conn.cursor()
         c.execute(
             "INSERT INTO users (name, email, password_hash, role, shop_name, public_key, encrypted_privkey) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (req.name, req.email, hashed_pw, req.role, req.shop_name, pk_hex, sk_hex)
+            (req.name.strip(), email, hashed_pw, req.role, req.shop_name, pk_hex, sk_hex)
         )
         conn.commit()
         user_id = c.lastrowid
@@ -86,7 +98,7 @@ def signup(req: SignupRequest):
 def login(req: LoginRequest):
     conn = get_db()
     try:
-        user = conn.execute("SELECT id, password_hash, name, role FROM users WHERE email = ?", (req.email,)).fetchone()
+        user = conn.execute("SELECT id, password_hash, name, role FROM users WHERE email = ?", (req.email.strip().lower(),)).fetchone()
         if not user or not verify_password(req.password, user["password_hash"]):
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -110,7 +122,7 @@ def get_users():
 def create_piece(req: PieceRequest, user_id: int = Depends(get_current_user_id)):
     conn = get_db()
     try:
-        code = generate_certificate_code()
+        code = generate_certificate_code(conn)
 
         c = conn.cursor()
         c.execute(
@@ -146,6 +158,37 @@ def get_my_pieces(user_id: int = Depends(get_current_user_id)):
     finally:
         conn.close()
 
+@app.get("/pieces/made")
+def get_pieces_i_made(user_id: int = Depends(get_current_user_id)):
+    """Everything this user created, including pieces already handed on.
+
+    /pieces/mine only shows current holdings; a maker still wants to follow a
+    piece after it leaves the studio.
+    """
+    conn = get_db()
+    try:
+        pieces = conn.execute('''
+            SELECT p.*, u.name AS current_owner_name, u.shop_name AS current_owner_shop
+            FROM pieces p LEFT JOIN users u ON p.current_owner_id = u.id
+            WHERE p.made_by = ? ORDER BY p.id DESC
+        ''', (user_id,)).fetchall()
+
+        out = []
+        for p in pieces:
+            d = dict(p)
+            last = conn.execute(
+                "SELECT to_name, seq_index FROM custody_records WHERE piece_id = ? ORDER BY seq_index DESC LIMIT 1",
+                (p["id"],)
+            ).fetchone()
+            d["holder"] = (d.pop("current_owner_shop", None) or d.pop("current_owner_name", None)
+                           or (last["to_name"] if last else None) or "Unknown")
+            d["transfers"] = last["seq_index"] if last else 0
+            d["still_held"] = p["current_owner_id"] == user_id
+            out.append(d)
+        return out
+    finally:
+        conn.close()
+
 # ---------- Transfer ----------
 
 @app.post("/pieces/{piece_id}/transfer")
@@ -155,6 +198,15 @@ def transfer_piece(piece_id: int, req: TransferRequest, user_id: int = Depends(g
         piece = conn.execute("SELECT current_owner_id FROM pieces WHERE id = ?", (piece_id,)).fetchone()
         if not piece or piece["current_owner_id"] != user_id:
             raise HTTPException(status_code=403, detail="You are not the current owner of this piece")
+
+        if req.to_user_id == user_id:
+            raise HTTPException(status_code=400, detail="You already hold this piece")
+        if req.to_user_id:
+            recipient = conn.execute("SELECT id FROM users WHERE id = ?", (req.to_user_id,)).fetchone()
+            if not recipient:
+                raise HTTPException(status_code=404, detail="Recipient not found")
+        elif not (req.to_name or "").strip():
+            raise HTTPException(status_code=400, detail="Enter the buyer's name")
 
         last_rec = conn.execute(
             "SELECT seq_index, record_hash FROM custody_records WHERE piece_id = ? ORDER BY seq_index DESC LIMIT 1",
@@ -189,38 +241,50 @@ def transfer_piece(piece_id: int, req: TransferRequest, user_id: int = Depends(g
 
 # ---------- Public Certificate ----------
 
+def _load_certificate(conn, code):
+    piece = conn.execute("SELECT * FROM pieces WHERE certificate_code = ?", (code.strip().upper(),)).fetchone()
+    if not piece:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    return piece
+
 @app.get("/c/{code}")
 def get_certificate(code: str):
     conn = get_db()
     try:
-        piece = conn.execute("SELECT * FROM pieces WHERE certificate_code = ?", (code,)).fetchone()
-        if not piece:
-            raise HTTPException(status_code=404, detail="Certificate not found")
+        piece = _load_certificate(conn, code)
 
         # Get maker name
         maker = conn.execute("SELECT name FROM users WHERE id = ?", (piece["made_by"],)).fetchone()
         maker_name = maker["name"] if maker else "Unknown"
 
         records = conn.execute('''
-            SELECT c.*, u1.name as from_name, u2.name as to_account_name
+            SELECT c.*, u1.name as from_name, u2.name as to_account_name, u2.shop_name as to_shop_name
             FROM custody_records c
             LEFT JOIN users u1 ON c.from_user_id = u1.id
             LEFT JOIN users u2 ON c.to_user_id = u2.id
             WHERE c.piece_id = ? ORDER BY c.seq_index ASC
         ''', (piece["id"],)).fetchall()
 
-        valid, reason = verify_full_chain(piece["id"])
+        valid, reason, checks = verify_chain_detailed(piece["id"])
+        checks_by_seq = {c["seq_index"]: c for c in checks}
 
         timeline = []
+        anchored = 0
         for r in records:
-            to_display = r["to_account_name"] or r["to_name"] or "Unknown"
+            to_display = r["to_shop_name"] or r["to_account_name"] or r["to_name"] or "Unknown"
+            chk = checks_by_seq.get(r["seq_index"], {})
+            inclusion = get_inclusion_proof(r["record_hash"])
+            if inclusion and inclusion["included"]:
+                anchored += 1
             timeline.append({
                 "seq_index": r["seq_index"],
                 "from_name": r["from_name"],
                 "to_name": to_display,
                 "note": r["note"],
                 "timestamp": r["timestamp"],
-                "record_hash": r["record_hash"]
+                "record_hash": r["record_hash"],
+                "checks": chk,
+                "checkpoint": inclusion["batch_index"] if inclusion and inclusion["included"] else None,
             })
 
         piece_dict = dict(piece)
@@ -230,10 +294,84 @@ def get_certificate(code: str):
             "piece": piece_dict,
             "timeline": timeline,
             "verified": valid,
-            "reason": reason
+            "reason": reason,
+            "ledger": {
+                "anchored_records": anchored,
+                "total_records": len(timeline),
+                "fully_anchored": bool(timeline) and anchored == len(timeline),
+            },
         }
     finally:
         conn.close()
+
+@app.get("/c/{code}/proof")
+def get_certificate_proof(code: str):
+    """Everything a third party needs to re-verify this certificate themselves.
+
+    Returns the exact signed fields, the record hashes, the signer public keys
+    and the Merkle inclusion proofs — so nobody has to take the server's word
+    for the green badge. See backend/verify_cli.py for a reference verifier.
+    """
+    conn = get_db()
+    try:
+        piece = _load_certificate(conn, code)
+        records = conn.execute(
+            "SELECT * FROM custody_records WHERE piece_id = ? ORDER BY seq_index ASC", (piece["id"],)
+        ).fetchall()
+
+        out = []
+        for r in records:
+            signer = conn.execute("SELECT name, public_key FROM users WHERE id = ?", (r["from_user_id"],)).fetchone()
+            out.append({
+                # These eight fields, canonically JSON-encoded, are what gets hashed.
+                "signed_fields": {
+                    "piece_id": r["piece_id"],
+                    "seq_index": r["seq_index"],
+                    "from_user_id": r["from_user_id"],
+                    "to_user_id": r["to_user_id"],
+                    "to_name": r["to_name"],
+                    "note": r["note"],
+                    "timestamp": r["timestamp"],
+                    "prev_hash": r["prev_hash"],
+                },
+                "record_hash": r["record_hash"],
+                "signature": r["signature"],
+                "signer": {
+                    "name": signer["name"] if signer else None,
+                    "public_key": signer["public_key"] if signer else None,
+                },
+                "merkle": get_inclusion_proof(r["record_hash"]),
+            })
+
+        valid, reason, _ = verify_chain_detailed(piece["id"])
+        return {
+            "certificate_code": piece["certificate_code"],
+            "piece_id": piece["id"],
+            "algorithms": {
+                "hash": "SHA-256 over canonical JSON (sorted keys, no whitespace)",
+                "signature": "Ed25519 over the raw 32-byte record hash",
+                "merkle": "SHA-256 binary tree, 0x00 leaf prefix / 0x01 node prefix, last node duplicated when odd",
+                "genesis_prev_hash": GENESIS_HASH,
+            },
+            "records": out,
+            "server_verdict": {"verified": valid, "reason": reason},
+        }
+    finally:
+        conn.close()
+
+# ---------- Public ledger (Merkle checkpoints) ----------
+
+@app.get("/ledger/checkpoints")
+def get_checkpoints():
+    return list_checkpoints()
+
+@app.post("/ledger/checkpoint")
+def publish_checkpoint():
+    """Seal every record recorded so far under a single Merkle root."""
+    result = create_checkpoint()
+    if result is None:
+        raise HTTPException(status_code=400, detail="Nothing to checkpoint yet")
+    return result
 
 # ---------- Tamper endpoint (admin/demo only) ----------
 

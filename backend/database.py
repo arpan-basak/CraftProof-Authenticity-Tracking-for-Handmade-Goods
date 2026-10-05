@@ -1,7 +1,11 @@
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "craftproof.db")
+# CRAFTPROOF_DB lets the tests (and a deployment) point at a different file.
+DB_PATH = os.environ.get(
+    "CRAFTPROOF_DB",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "craftproof.db"),
+)
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)

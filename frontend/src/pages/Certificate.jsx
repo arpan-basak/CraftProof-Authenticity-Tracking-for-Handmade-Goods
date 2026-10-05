@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { useParams } from 'react-router-dom'
-import { CheckCircle, AlertTriangle } from 'lucide-react'
+import { useParams, Link } from 'react-router-dom'
+import { CheckCircle, AlertTriangle, Stamp, Clock, Copy, Check } from 'lucide-react'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8002'
 
@@ -9,6 +9,7 @@ export default function Certificate() {
   const [data, setData] = useState(null)
   const [error, setError] = useState(false)
   const [showTech, setShowTech] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     fetch(`${API}/c/${code}`)
@@ -20,11 +21,20 @@ export default function Certificate() {
       .catch(() => setError(true))
   }, [code])
 
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch { /* clipboard unavailable */ }
+  }
+
   if (error) {
     return (
       <div style={{ textAlign: 'center', marginTop: '4rem' }}>
         <h2>Certificate not found</h2>
         <p style={{ color: 'var(--color-muted)' }}>The code "{code}" doesn't match any registered piece.</p>
+        <Link to="/" className="btn btn-outline btn-sm" style={{ marginTop: '1rem' }}>Try another code</Link>
       </div>
     )
   }
@@ -42,6 +52,17 @@ export default function Certificate() {
     }
   }
 
+  // Name the failing check in plain language, for the one event that broke.
+  const problemWith = (checks) => {
+    if (!checks || checks.ok !== false) return null
+    if (!checks.content_ok) return 'The details of this step were changed after it was confirmed.'
+    if (!checks.linkage_ok) return 'This step does not follow on from the one before it.'
+    if (!checks.signature_ok) return 'The confirmation for this step could not be matched to the person named.'
+    return 'This step could not be verified.'
+  }
+
+  const ledger = data.ledger || {}
+
   return (
     <div className="card" style={{ maxWidth: '620px', margin: '2rem auto', padding: '0', overflow: 'hidden' }}>
       {/* Header */}
@@ -50,6 +71,11 @@ export default function Certificate() {
         <p style={{ color: 'var(--color-muted)', fontStyle: 'italic', marginBottom: '0.3rem', fontSize: '1rem' }}>
           by {data.piece.maker_name}
         </p>
+        {data.piece.materials && (
+          <p style={{ color: 'var(--color-faint)', fontSize: '0.85rem', fontFamily: 'var(--font-sans)', marginBottom: '0.5rem' }}>
+            {data.piece.materials}
+          </p>
+        )}
         {data.piece.description && (
           <p style={{ color: 'var(--color-faint)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>{data.piece.description}</p>
         )}
@@ -68,34 +94,67 @@ export default function Certificate() {
             </span>
           </div>
         )}
+
+        {/* Public-ledger status */}
+        {data.verified && ledger.total_records > 0 && (
+          <div style={{ marginTop: '1rem', fontFamily: 'var(--font-sans)', fontSize: '0.85rem' }}>
+            {ledger.fully_anchored ? (
+              <span style={{ color: 'var(--color-success)', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Stamp size={15} /> Sealed in the <Link to="/ledger" style={{ color: 'var(--color-success)', textDecoration: 'underline' }}>public ledger</Link>
+              </span>
+            ) : (
+              <span style={{ color: 'var(--color-faint)', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Clock size={15} /> {ledger.anchored_records} of {ledger.total_records} steps sealed in the{' '}
+                <Link to="/ledger" style={{ textDecoration: 'underline' }}>public ledger</Link> so far
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Timeline */}
       <div style={{ padding: '2rem 2.5rem' }}>
         <h3 style={{ fontSize: '1.15rem', marginBottom: '1.5rem' }}>Ownership History</h3>
         <ul className="timeline">
-          {data.timeline.map((event, i) => (
-            <li key={i} className="timeline-item">
-              <div className="timeline-date">{formatDate(event.timestamp)}</div>
-              <div className="timeline-title">
-                {i === 0
-                  ? `Crafted by ${event.from_name}`
-                  : `Transferred to ${event.to_name}`
-                }
-              </div>
-              {event.note && event.note !== 'Piece created' && (
-                <div style={{ fontSize: '0.88rem', color: 'var(--color-muted)', marginTop: '0.15rem', fontStyle: 'italic' }}>
-                  "{event.note}"
+          {data.timeline.map((event, i) => {
+            const problem = problemWith(event.checks)
+            return (
+              <li key={i} className={`timeline-item${problem ? ' timeline-item-bad' : ''}`}>
+                <div className="timeline-date">{formatDate(event.timestamp)}</div>
+                <div className="timeline-title">
+                  {i === 0
+                    ? `Crafted by ${event.from_name}`
+                    : `Transferred to ${event.to_name}`
+                  }
                 </div>
-              )}
-              {i > 0 && (
-                <div style={{ fontSize: '0.8rem', color: 'var(--color-success)', marginTop: '0.15rem' }}>
-                  ✓ Confirmed by {event.from_name}
-                </div>
-              )}
-            </li>
-          ))}
+                {event.note && event.note !== 'Piece created' && (
+                  <div style={{ fontSize: '0.88rem', color: 'var(--color-muted)', marginTop: '0.15rem', fontStyle: 'italic' }}>
+                    "{event.note}"
+                  </div>
+                )}
+                {problem ? (
+                  <div style={{ fontSize: '0.82rem', color: 'var(--color-error)', marginTop: '0.25rem', fontFamily: 'var(--font-sans)' }}>
+                    ⚠ {problem}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--color-success)', marginTop: '0.15rem', fontFamily: 'var(--font-sans)' }}>
+                    ✓ Confirmed by {event.from_name}
+                    {event.checkpoint ? ` · sealed in checkpoint #${event.checkpoint}` : ''}
+                  </div>
+                )}
+              </li>
+            )
+          })}
         </ul>
+
+        <div style={{ marginTop: '1.5rem', display: 'flex', gap: '0.8rem', flexWrap: 'wrap' }}>
+          <button className="btn btn-outline btn-sm" onClick={copyLink}>
+            {copied
+              ? <><Check size={14} style={{ verticalAlign: '-2px', marginRight: '0.4rem' }} />Link copied</>
+              : <><Copy size={14} style={{ verticalAlign: '-2px', marginRight: '0.4rem' }} />Copy link</>}
+          </button>
+          <Link to="/how-it-works" className="btn btn-outline btn-sm">How is this checked?</Link>
+        </div>
       </div>
 
       {/* Tech explanation */}
@@ -116,9 +175,12 @@ export default function Certificate() {
             <p>
               All these confirmations are also recorded in a shared public ledger, so even we (CraftProof) can't quietly alter this history without it being detectable.
             </p>
-            <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--color-border)' }}>
+            <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <a href={`${API}/c/${code}/proof`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-faint)', fontSize: '0.85rem' }}>
+                Check it yourself: full verification data (JSON) →
+              </a>
               <a href={`${API}/c/${code}`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-faint)', fontSize: '0.85rem' }}>
-                View raw verification data (JSON) →
+                View raw certificate data (JSON) →
               </a>
             </div>
           </div>

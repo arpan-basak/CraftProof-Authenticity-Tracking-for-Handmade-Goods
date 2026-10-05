@@ -16,6 +16,9 @@ craftproof/
 │   ├── core.py           # Chain verification & Merkle tree logic
 │   ├── crypto_utils.py   # Ed25519 keypair generation, signing, verification
 │   ├── merkle.py         # Merkle tree construction & proof generation
+│   ├── verify_cli.py     # Independent verifier — re-checks a certificate without trusting the server
+│   ├── test_crypto.py    # Tests for the crypto engine and the attacks it must catch
+│   ├── seed.py           # Demo data: makers, galleries, pieces mid-journey
 │   └── tamper_demo.py    # Admin script to simulate database tampering
 └── frontend/             # React + Vite SPA
     └── src/
@@ -23,8 +26,10 @@ craftproof/
         ├── pages/
         │   ├── Landing.jsx   # Public landing page with certificate lookup
         │   ├── Auth.jsx      # Login / Signup forms
-        │   ├── Dashboard.jsx # Maker/Seller inventory + QR codes
-        │   └── Certificate.jsx # Public certificate verification page
+        │   ├── Dashboard.jsx # Maker/Seller inventory + QR codes + printable tags
+        │   ├── Certificate.jsx # Public certificate verification page
+        │   ├── Ledger.jsx    # Published checkpoints ("public ledger")
+        │   └── HowItWorks.jsx # Plain-language explainer
         └── index.css         # Artisan-themed design system
 ```
 
@@ -34,7 +39,7 @@ craftproof/
 |---|---|---|
 | **Hash Chain** | SHA-256 linked records (`prev_hash → record_hash`) | Unbroken ownership timeline |
 | **Digital Signatures** | Ed25519 — each transfer signed by outgoing custodian | "✓ Confirmed by [Name]" |
-| **Merkle Proofs** | Binary Merkle tree over all custody records | "✓ Included in the public ledger" |
+| **Merkle Proofs** | Binary Merkle tree over all custody records, published as numbered checkpoints | "✓ Sealed in the public ledger" |
 | **Tamper Detection** | Hash recomputation + signature verification on page load | Green badge or red warning |
 
 ## 🚀 Quick Start
@@ -63,6 +68,45 @@ npm run dev -- --port 5174
 
 Then open **http://localhost:5174**
 
+### Demo data
+
+Don't demo an empty app — seed three makers, two galleries and five pieces at different
+stages of their journey (all accounts use the password `craftproof123`):
+
+```bash
+cd backend
+source venv/bin/activate
+python3 seed.py            # add demo data
+python3 seed.py --reset    # or wipe the database and start clean
+```
+
+### Running the tests
+
+```bash
+cd backend
+source venv/bin/activate
+python3 test_crypto.py
+```
+
+12 tests covering the primitives (canonical JSON, hash sensitivity, signature rejection, Merkle
+proofs with an odd leaf count, leaf/node domain separation) and the attacks the chain must
+catch — edited records, deleted records, and a forgery where the attacker recomputes the hash
+but still cannot produce the custodian's signature.
+
+### Verifying independently
+
+The green badge is computed by the server — so the server has to be trusted. `verify_cli.py`
+removes that assumption: it pulls the raw proof data and re-checks every hash, signature and
+Merkle proof locally.
+
+```bash
+cd backend
+source venv/bin/activate
+python3 verify_cli.py AB12CD34
+```
+
+It prints a pass/fail line per check per record, and exits non-zero if anything fails.
+
 ## 📋 User Flows
 
 ### 1. Maker Registers a Piece
@@ -85,7 +129,21 @@ source venv/bin/activate
 python3 tamper_demo.py 1 0 "FORGED: not actually handmade"
 ```
 
-Reload the certificate page — the green badge turns red: **"⚠ WARNING: ALTERED RECORD — Record 0 content hash mismatch"**
+Reload the certificate page — the green badge turns red: **"⚠ WARNING: ALTERED RECORD — Record 0 content hash mismatch"**, and the altered step in the ownership timeline is called out individually.
+
+Then run the independent verifier on the same certificate to show that the detection doesn't
+depend on the server being honest:
+
+```bash
+python3 verify_cli.py AB12CD34
+```
+
+```
+Record 0: 3 -> Self  (2026-06-12T08:08:19+00:00)
+  [FAIL] content hash mismatch — this record was altered after signing
+         stored:      d11cdcb870f4dd646b4cb2d5a6b13071cea76c13e3498518f620162941c6bd29
+         recomputed:  a05d23cfdf050ef7e2a41ece93ed067fe03c0784aa372e1d7f4570ae6f50ab93
+```
 
 ## 🛠️ API Endpoints
 
@@ -95,8 +153,12 @@ Reload the certificate page — the green badge turns red: **"⚠ WARNING: ALTER
 | `POST` | `/auth/login` | No | Login, receive JWT |
 | `POST` | `/pieces` | Yes | Register a new piece + genesis record |
 | `GET` | `/pieces/mine` | Yes | List pieces you currently hold |
+| `GET` | `/pieces/made` | Yes | List pieces you created, including ones handed on |
 | `POST` | `/pieces/{id}/transfer` | Yes | Transfer to another user or external buyer |
-| `GET` | `/c/{code}` | No | Public certificate with server-side verification |
+| `GET` | `/c/{code}` | No | Public certificate with server-side verification, per-step results and ledger status |
+| `GET` | `/c/{code}/proof` | No | Raw signed fields, hashes, public keys and Merkle proofs, for independent verification |
+| `GET` | `/ledger/checkpoints` | No | Published Merkle roots with timestamps |
+| `POST` | `/ledger/checkpoint` | No | Seal every record so far under a new Merkle root |
 | `GET` | `/users` | No | List registered users |
 | `POST` | `/admin/tamper/{piece_id}/{seq}` | No | Demo: silently alter a record |
 

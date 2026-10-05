@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
+import { Download } from 'lucide-react'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8002'
 
@@ -13,6 +14,8 @@ export default function Dashboard() {
   const [transferData, setTransferData] = useState({ to_user_id: '', to_name: '', note: '' })
   const [activeTransfer, setActiveTransfer] = useState(null)
   const [creating, setCreating] = useState(false)
+  const [made, setMade] = useState([])
+  const [error, setError] = useState('')
 
   const token = localStorage.getItem('craftproof_token')
 
@@ -23,6 +26,7 @@ export default function Dashboard() {
     }
     fetchPieces()
     fetchUsers()
+    fetchMade()
   }, [])
 
   const fetchPieces = async () => {
@@ -33,6 +37,15 @@ export default function Dashboard() {
       if (res.ok) setPieces(await res.json())
       else if (res.status === 401) navigate('/login')
     } catch { /* server down */ }
+  }
+
+  const fetchMade = async () => {
+    try {
+      const res = await fetch(`${API}/pieces/made`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) setMade(await res.json())
+    } catch { /* ignore */ }
   }
 
   const fetchUsers = async () => {
@@ -54,9 +67,16 @@ export default function Dashboard() {
       if (res.ok) {
         setShowNew(false)
         setNewPiece({ title: '', description: '', materials: '' })
+        setError('')
         fetchPieces()
+        fetchMade()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setError(data.detail || 'Could not create the certificate.')
       }
-    } catch { /* ignore */ }
+    } catch {
+      setError('Cannot reach the server.')
+    }
     setCreating(false)
   }
 
@@ -76,9 +96,43 @@ export default function Dashboard() {
       if (res.ok) {
         setActiveTransfer(null)
         setTransferData({ to_user_id: '', to_name: '', note: '' })
+        setError('')
         fetchPieces()
+        fetchMade()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setError(data.detail || 'Could not record the transfer.')
       }
-    } catch { /* ignore */ }
+    } catch {
+      setError('Cannot reach the server.')
+    }
+  }
+
+  // Render the on-screen QR into a printable PNG label with the code underneath.
+  const downloadQr = (code) => {
+    const svg = document.getElementById(`qr-${code}`)
+    if (!svg) return
+    const xml = new XMLSerializer().serializeToString(svg)
+    const img = new Image()
+    img.onload = () => {
+      const size = 600, pad = 40, caption = 60
+      const canvas = document.createElement('canvas')
+      canvas.width = size + pad * 2
+      canvas.height = size + pad * 2 + caption
+      const ctx = canvas.getContext('2d')
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(img, pad, pad, size, size)
+      ctx.fillStyle = '#1a1814'
+      ctx.font = '32px monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText(code, canvas.width / 2, size + pad + 42)
+      const link = document.createElement('a')
+      link.href = canvas.toDataURL('image/png')
+      link.download = `craftproof-${code}.png`
+      link.click()
+    }
+    img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(xml)))
   }
 
   return (
@@ -89,6 +143,12 @@ export default function Dashboard() {
           {showNew ? '✕ Cancel' : '+ Register New Piece'}
         </button>
       </div>
+
+      {error && (
+        <div className="badge badge-error" style={{ width: '100%', marginBottom: '1rem', justifyContent: 'center' }}>
+          {error}
+        </div>
+      )}
 
       {showNew && (
         <div className="card">
@@ -124,11 +184,15 @@ export default function Dashboard() {
         <div key={p.id} className="card card-flex" style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
           <div style={{ textAlign: 'center', flexShrink: 0 }}>
             <div style={{ padding: '1rem', background: '#fff', border: '1px solid var(--color-border)', borderRadius: '6px', display: 'inline-block' }}>
-              <QRCodeSVG value={`${window.location.origin}/c/${p.certificate_code}`} size={140} />
+              <QRCodeSVG id={`qr-${p.certificate_code}`} value={`${window.location.origin}/c/${p.certificate_code}`} size={140} />
             </div>
             <div style={{ marginTop: '0.5rem', fontFamily: 'monospace', fontSize: '0.9rem', letterSpacing: '2px', color: 'var(--color-muted)' }}>
               {p.certificate_code}
             </div>
+            <button className="btn btn-outline btn-sm" style={{ marginTop: '0.6rem' }} onClick={() => downloadQr(p.certificate_code)}>
+              <Download size={13} style={{ verticalAlign: '-2px', marginRight: '0.4rem' }} />
+              Download tag
+            </button>
           </div>
 
           <div style={{ flex: 1, minWidth: '200px' }}>
@@ -176,6 +240,29 @@ export default function Dashboard() {
           </div>
         </div>
       ))}
+
+      {/* Pieces that have left the studio — still worth following. */}
+      {made.filter(p => !p.still_held).length > 0 && (
+        <div style={{ marginTop: '3rem' }}>
+          <h3 style={{ marginBottom: '0.3rem' }}>Pieces You've Made</h3>
+          <p style={{ color: 'var(--color-faint)', fontFamily: 'var(--font-sans)', fontSize: '0.88rem', marginTop: 0 }}>
+            These have moved on, but their certificates are still live.
+          </p>
+          <div className="card" style={{ padding: '0.5rem 0' }}>
+            {made.filter(p => !p.still_held).map(p => (
+              <div key={p.id} className="past-piece">
+                <div>
+                  <div style={{ fontWeight: 600 }}>{p.title}</div>
+                  <div style={{ fontFamily: 'var(--font-sans)', fontSize: '0.85rem', color: 'var(--color-muted)' }}>
+                    Now with {p.holder} · {p.transfers} {p.transfers === 1 ? 'handover' : 'handovers'}
+                  </div>
+                </div>
+                <Link to={`/c/${p.certificate_code}`} className="btn btn-outline btn-sm">View Certificate</Link>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
