@@ -13,18 +13,28 @@ function Nav() {
   const navigate = useNavigate()
 
   useEffect(() => {
-    const stored = localStorage.getItem('craftproof_user')
-    if (stored) {
-      try { setUser(JSON.parse(stored)) } catch { /* ignore */ }
+    const readUser = () => {
+      const stored = localStorage.getItem('craftproof_user')
+      if (stored) {
+        try { setUser(JSON.parse(stored)) } catch { /* ignore */ }
+      } else {
+        setUser(null)
+      }
     }
+    readUser()
+    // Auth pages dispatch this after sign-in/out so the nav updates without a
+    // full page reload — reloading a deep link 404s on static hosts that lack
+    // an SPA rewrite rule (e.g. our Render deployment).
+    window.addEventListener('craftproof-auth', readUser)
+    return () => window.removeEventListener('craftproof-auth', readUser)
   }, [])
 
   const handleLogout = () => {
     localStorage.removeItem('craftproof_token')
     localStorage.removeItem('craftproof_user')
     setUser(null)
+    window.dispatchEvent(new Event('craftproof-auth'))
     navigate('/')
-    window.location.reload()
   }
 
   return (

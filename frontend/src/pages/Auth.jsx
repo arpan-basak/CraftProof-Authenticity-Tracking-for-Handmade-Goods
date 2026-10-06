@@ -27,8 +27,10 @@ export default function Auth({ mode }) {
       if (res.ok) {
         localStorage.setItem('craftproof_token', data.access_token)
         localStorage.setItem('craftproof_user', JSON.stringify({ name: data.name, role: data.role, id: data.user_id }))
+        // Update the nav reactively instead of reloading: a reload of a deep
+        // link like /dashboard 404s on static hosts without SPA rewrites.
+        window.dispatchEvent(new Event('craftproof-auth'))
         navigate('/dashboard')
-        window.location.reload()
       } else {
         setError(data.detail || 'Something went wrong')
       }
