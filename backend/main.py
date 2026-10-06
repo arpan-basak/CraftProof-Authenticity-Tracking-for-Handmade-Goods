@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,15 +9,50 @@ from database import get_db
 from crypto_utils import generate_keypair, pubkey_to_hex, sign
 from core import verify_chain_detailed, create_checkpoint, list_checkpoints, get_inclusion_proof
 from record import CustodyRecord, GENESIS_HASH
+from seed import seed as seed_demo_data
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-app = FastAPI()
+
+def seed_demo_if_empty():
+    """First boot on a fresh database (e.g. every new Render deploy, where the
+    disk starts empty): fill it with the demo makers, pieces and a ledger
+    checkpoint so the deployed app never opens on a blank slate."""
+    conn = get_db()
+    try:
+        is_empty = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"] == 0
+    finally:
+        conn.close()
+    if is_empty:
+        print("[startup] Empty database — seeding demo makers, pieces and a checkpoint")
+        seed_demo_data()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    seed_demo_if_empty()
+    yield
+
+
+app = FastAPI(
+    title="CraftProof API",
+    description=(
+        "Public API for CraftProof — tamper-proof authenticity certificates for "
+        "handmade goods. Verification endpoints are open and need no API key; "
+        "write endpoints (registering pieces, transfers) need a bearer token from "
+        "POST /auth/login. Interactive docs: /docs — raw schema: /openapi.json"
+    ),
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # Auth uses bearer tokens in the Authorization header, not cookies, so
+    # credentialed requests are never needed — and wildcard origin + credentials
+    # is an invalid combination per the CORS spec.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -355,6 +391,71 @@ def get_certificate_proof(code: str):
             },
             "records": out,
             "server_verdict": {"verified": valid, "reason": reason},
+        }
+    finally:
+        conn.close()
+
+# ---------- Public integration API ----------
+
+@app.get("/api/verify/{code}", tags=["Public API"], summary="Verify a certificate by code")
+def api_verify(code: str):
+    """One-call authenticity check for third-party sites.
+
+    Returns a plain-language verdict plus the piece's full ownership history —
+    no API key, no cryptographic internals to parse. Integrators who want to
+    re-verify the cryptography themselves should use /c/{code}/proof instead.
+    """
+    conn = get_db()
+    try:
+        piece = _load_certificate(conn, code)
+
+        maker = conn.execute("SELECT name FROM users WHERE id = ?", (piece["made_by"],)).fetchone()
+        records = conn.execute(
+            "SELECT * FROM custody_records WHERE piece_id = ? ORDER BY seq_index ASC", (piece["id"],)
+        ).fetchall()
+        valid, reason, _ = verify_chain_detailed(piece["id"])
+
+        holder = None
+        if piece["current_owner_id"]:
+            h = conn.execute("SELECT name, shop_name FROM users WHERE id = ?", (piece["current_owner_id"],)).fetchone()
+            if h:
+                holder = h["shop_name"] or h["name"]
+
+        history = []
+        anchored = 0
+        for r in records:
+            frm = conn.execute("SELECT name FROM users WHERE id = ?", (r["from_user_id"],)).fetchone()
+            from_name = frm["name"] if frm else "Unknown"
+            to = conn.execute("SELECT name, shop_name FROM users WHERE id = ?", (r["to_user_id"],)).fetchone() if r["to_user_id"] else None
+            to_name = (to["shop_name"] or to["name"]) if to else (r["to_name"] or "Unknown")
+            event = f"Created by {from_name}" if r["seq_index"] == 0 else f"{from_name} → {to_name}"
+            inclusion = get_inclusion_proof(r["record_hash"])
+            if inclusion and inclusion["included"]:
+                anchored += 1
+            history.append({
+                "date": r["timestamp"],
+                "event": event,
+                "note": r["note"] or None,
+            })
+
+        return {
+            "certificate_code": piece["certificate_code"],
+            "authentic": valid,
+            "reason": None if valid else reason,
+            "piece": {
+                "title": piece["title"],
+                "description": piece["description"],
+                "materials": piece["materials"],
+                "maker": maker["name"] if maker else None,
+                "created_at": records[0]["timestamp"] if records else None,
+            },
+            "current_holder": holder,
+            "history": history,
+            "ledger": {
+                "records": len(records),
+                "anchored": anchored,
+            },
+            "verify_url": f"/c/{piece['certificate_code']}",
         }
     finally:
         conn.close()

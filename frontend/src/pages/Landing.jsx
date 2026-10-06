@@ -8,7 +8,7 @@ import {
 import './landing.css'
 
 const SAMPLE_CODES = [
-  { code: 'KOODE0LL', title: 'Raku vessel' },
+  { code: 'KOODE0LL', title: 'Speckled tea bowls' },
   { code: '0275UKUB', title: 'Walnut serving board' },
 ]
 
@@ -449,6 +449,7 @@ function Footer() {
             <span className="cpl-footer-col-title">Atelier Ledger</span>
             <Link to="/how-it-works">How it Works</Link>
             <Link to="/ledger">Public Ledger</Link>
+            <Link to="/developers">Public API</Link>
             <a href="#verify">Verify a Piece</a>
             <a href="#makers">Makers &amp; Galleries</a>
           </div>

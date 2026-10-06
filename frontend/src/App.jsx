@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard'
 import Certificate from './pages/Certificate'
 import Ledger from './pages/Ledger'
 import HowItWorks from './pages/HowItWorks'
+import Developers from './pages/Developers'
 
 function Nav() {
   const [user, setUser] = useState(null)
@@ -32,6 +33,7 @@ function Nav() {
       <div className="nav-links">
         <Link to="/how-it-works">How it works</Link>
         <Link to="/ledger">Checkpoints</Link>
+        <Link to="/developers">API</Link>
         {user ? (
           <>
             <span className="nav-user">Hi, {user.name}</span>
@@ -67,6 +69,7 @@ function App() {
                 <Route path="/c/:code" element={<Certificate />} />
                 <Route path="/ledger" element={<Ledger />} />
                 <Route path="/how-it-works" element={<HowItWorks />} />
+                <Route path="/developers" element={<Developers />} />
               </Routes>
             </div>
           }

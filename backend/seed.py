@@ -33,16 +33,19 @@ SELLERS = [
     ("Priya Nair", "priya@example.com", "Kalakriti Gallery"),
     ("Daniel Okoro", "daniel@example.com", "Northlight Craft Studio"),
 ]
+# The two pieces the landing page advertises get fixed certificate codes so
+# the live demo's sample-verify buttons always resolve, even after a fresh
+# deploy on an empty database. None → random code.
 PIECES = [
-    (0, "Hand-thrown ceramic vase", "Stoneware clay, ash glaze",
+    (0, None, "Hand-thrown ceramic vase", "Stoneware clay, ash glaze",
      "Thrown on a kick wheel and wood-fired over three days.", 2, "Elena Fischer"),
-    (0, "Speckled tea bowl set", "Stoneware clay, tenmoku glaze",
+    (0, "KOODE0LL", "Speckled tea bowl set", "Stoneware clay, tenmoku glaze",
      "A set of four bowls, each slightly different by hand.", 1, None),
-    (1, "Walnut serving board", "Black walnut, food-safe oil",
+    (1, "0275UKUB", "Walnut serving board", "Black walnut, food-safe oil",
      "Cut from a single storm-felled walnut in Jutland.", 2, "Marcus Webb"),
-    (1, "Oak three-legged stool", "White oak, hand-cut joinery",
+    (1, None, "Oak three-legged stool", "White oak, hand-cut joinery",
      "Green-wood joinery, no screws or glue.", 0, None),
-    (2, "Silver filigree earrings", "Sterling silver",
+    (2, None, "Silver filigree earrings", "Sterling silver",
      "Drawn and twisted by hand using traditional filigree technique.", 2, "Ravi Menon"),
 ]
 
@@ -99,9 +102,11 @@ def seed():
         now = datetime.now(timezone.utc)
         created = []
 
-        for maker_idx, title, materials, story, hops, buyer in PIECES:
+        for maker_idx, fixed_code, title, materials, story, hops, buyer in PIECES:
             maker_id = maker_ids[maker_idx]
-            code = unique_code(conn)
+            code = fixed_code
+            if code is None or conn.execute("SELECT 1 FROM pieces WHERE certificate_code = ?", (code,)).fetchone():
+                code = unique_code(conn)
             c = conn.cursor()
             c.execute(
                 "INSERT INTO pieces (certificate_code, title, description, materials, made_by, current_owner_id) VALUES (?, ?, ?, ?, ?, ?)",
