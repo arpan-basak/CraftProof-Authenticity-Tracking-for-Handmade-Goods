@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
 import { Download } from 'lucide-react'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8002'
+import { API } from '../api'
 
 export default function Dashboard() {
   const navigate = useNavigate()

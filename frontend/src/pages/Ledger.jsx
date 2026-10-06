@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Stamp, RefreshCw } from 'lucide-react'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8002'
+import { API } from '../api'
 
 export default function Ledger() {
   const [checkpoints, setCheckpoints] = useState(null)

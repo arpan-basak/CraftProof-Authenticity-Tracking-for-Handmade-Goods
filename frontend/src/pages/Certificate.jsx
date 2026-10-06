@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { CheckCircle, AlertTriangle, Stamp, Clock, Copy, Check } from 'lucide-react'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8002'
+import { API } from '../api'
 
 export default function Certificate() {
   const { code } = useParams()
